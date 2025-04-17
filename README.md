@@ -10,5 +10,5 @@ To set up the project:
 4.  Moved the dataset to the root directory of the repository.
 5.  Open the `Cyclistic Data Analysis Project.Rproj` with RStudio.
 
-You can also view the [markdown]().
+You can also view the [markdown](https://emma-fosu.github.io/Cyclistic-Bike-Sharing-Project/).
 
