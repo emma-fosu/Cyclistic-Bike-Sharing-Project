@@ -1,0 +1,1021 @@
+---
+title: "Cyclistic Project: Google Professional Data Analytics Capstone Project"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+# Cyclistic Data Analysis Project (Google Data Analysis Certificate Case Study)
+
+## Introduction
+
+### Problem Statement
+
+Cyclistic aims to maximize its annual memberships, as the marketing director believes this is key to long-term success. This analysis will explore differences in riding behavior between casual riders and annual members to support this goal. By examining trip duration, ride frequency, peak usage times, and common routes over the last 12 months, we will uncover insights that can guide targeted marketing strategies to convert more casual riders into annual members.
+
+### Data Source
+
+The data has been made available by Motivate International Inc. under this [license](https://www.divvybikes.com/data-license-agreement).
+
+The data source is partitioned into twelve zip folders. Each zip folder contains a .csv file for a particular month in 2024. The zip folder and .csv file are named: `YYYYMM-divvy-tripdata` and `YYYMM-divvy-tripdata.csv` respectively.
+
+## Data Analysis Process
+
+### Setting Up Environment and Libraries
+
+```{r message=FALSE, warning=FALSE}
+# Installing packages
+#install.packages("tidyverse")
+#install.packages("vroom")
+#install.packages("FNN")
+#install.packages("ggrepel")
+#install.packages("sf")
+#install.packages("terra")
+#install.packages("mapview")
+
+
+
+# Loading packages
+library("tidyverse") # For data manipulation, analysis, and graphing
+library("vroom") # For file reading and writing
+library("FNN")  # For nearest neighbor search
+library("ggrepel")
+library("mapview") # For map charts
+library("sf")
+
+mapviewOptions(fgb = FALSE, georaster = FALSE)
+```
+
+### Reading and Loading Data Source
+
+As stated earlier, the data source was in twelve zip folders. Each file was appended to a .csv file, 2024-divvy-tripdata.csv, and a data variable, `trip_data`.
+
+```{r message=FALSE}
+files_name <- c(
+  "divvy-tripdata-2024/202401-divvy-tripdata.csv",
+  "divvy-tripdata-2024/202402-divvy-tripdata.csv",
+  "divvy-tripdata-2024/202403-divvy-tripdata.csv",
+  "divvy-tripdata-2024/202404-divvy-tripdata.csv",
+  "divvy-tripdata-2024/202405-divvy-tripdata.csv",
+  "divvy-tripdata-2024/202406-divvy-tripdata.csv",
+  "divvy-tripdata-2024/202407-divvy-tripdata.csv",
+  "divvy-tripdata-2024/202408-divvy-tripdata.csv",
+  "divvy-tripdata-2024/202409-divvy-tripdata.csv",
+  "divvy-tripdata-2024/202410-divvy-tripdata.csv",
+  "divvy-tripdata-2024/202411-divvy-tripdata.csv",
+  "divvy-tripdata-2024/202412-divvy-tripdata.csv"
+  )
+
+trip_data <- vroom(files_name)
+```
+
+### Previewing the Data Frame
+
+```{r}
+trip_data %>% glimpse() 
+```
+
+```{r}
+trip_data %>% colnames() # Shows the column names of the data frame
+```
+
+### Processing and Cleaning Data Frame
+
+After reviewing the data frame, all fields containing characters were trimmed to remove leading and trailing spaces using R Base function `trimws` and `mutate`.
+
+```{r}
+trip_data <- trip_data %>% mutate(
+  ride_id = trimws(ride_id),
+  rideable_type = trimws(rideable_type),
+  start_station_id = trimws(start_station_id), 
+  end_station_id = trimws(end_station_id), 
+  start_station_name = trimws(start_station_name),
+  end_station_name = trimws(end_station_name),
+  member_casual = trimws(member_casual)
+  )
+```
+
+The next step is to check each field for data consistency, completeness, accuracy, and trustworthiness.
+
+#### The `ride_id` field
+
+The `ride_id` field is unique and should not be empty or duplicated. Any trip with such `ride_id` was removed from the dataset.
+
+```{r}
+trip_data <- trip_data %>% 
+  distinct(ride_id, .keep_all = TRUE)
+```
+
+#### The `rideable_type` field
+
+The `rideable_type` field has three distinct types: `electric_bike`, `classic_bike`, and `electric_scooter`. There was no trip with an empty `rideable_type`.
+
+```{r}
+trip_data %>% 
+  distinct(rideable_type)
+```
+
+#### The `started_at` and `ended_at` fields
+
+Both the `started_at` and `ended_at` fields were in `datetime` type. Both fields were complete.
+
+-   Any trip with an `ended_at` greater than `started_at` was removed because it may be a technical error or a data transfer and input error.
+
+```{r}
+trip_data <- trip_data %>%  
+  filter(!(started_at > ended_at))
+```
+
+-   The dataset's documentation states that any ride duration of less than 60 seconds was removed. Let's verify 🕵️.
+
+```{r}
+trip_data %>% 
+  filter((ended_at - started_at) < 60) %>% 
+  count() # Whoosh, many
+```
+
+```{r}
+# Removing trips less than a minute ride
+trip_data <- trip_data %>%  
+  filter(!((ended_at - started_at) < 60))
+```
+
+#### The `start_staion_name` and `start_station_id` fields
+
+```{r}
+# Checking if there exist trips without both start station id and name
+trip_data %>% 
+  filter(
+    is.na(start_station_id) &  
+    is.na(start_station_name)) %>% 
+  count() # Many exist
+```
+
+```{r}
+# Checking the average time of such trips if there are anomalies
+trip_data %>% 
+  filter(
+    is.na(start_station_id) & 
+    is.na(start_station_name)) %>% 
+  summarise(ave_trip_duration = mean(ended_at - started_at)) # Resonable trips
+```
+
+The average trip duration makes sense, but what about data integrity for trips without an end station ID and name?
+
+```{r}
+# Checking if there exist trips without both station id and name
+trip_data %>% 
+  filter(
+    is.na(start_station_id) & 
+    is.na(start_station_name) & 
+    is.na(end_station_name) & 
+    is.na(end_station_id)
+    ) %>% 
+  count()
+```
+
+The number of such trips is smaller and further investigation is needed.
+
+```{r}
+# Checking the average trip duration to find anomalies
+trip_data %>% 
+  filter(
+    is.na(start_station_id) & 
+    is.na(start_station_name) & 
+    is.na(end_station_name) & 
+    is.na(end_station_id)
+    ) %>% 
+  summarise(ave_trip_duration = mean(ended_at - started_at))
+```
+
+```{r}
+# Checking trips without start station ID and name and start latitude and longitude
+trip_data %>% 
+  filter(
+    is.na(start_station_id) & 
+    is.na(start_station_name) & 
+    is.na(start_lat) & 
+    is.na(start_lng)
+    ) %>% 
+  count() # None exist
+```
+
+```{r}
+# Checking trips without end station ID and name, and end latitude and longitude
+trip_data %>% 
+  filter(
+    is.na(end_station_id) & 
+    is.na(end_station_name) & 
+    is.na(end_lat) & is.na(end_lng)
+    ) %>% 
+  count # Many exist
+```
+
+```{r}
+# Calculating the average duration to find anomalies 
+trip_data %>% 
+  filter(
+    is.na(end_station_id) & 
+    is.na(end_station_name) & 
+    is.na(end_lat) & 
+    is.na(end_lng)
+    ) %>% 
+  summarise(ave_trip_duration = mean(ended_at - started_at))
+```
+
+I got it😊. A 25-hour ride is unusual. I believe such trips were caused by technical issues or bikes being stolen. Therefore, such trips were removed.
+
+```{r}
+trip_data <- trip_data %>% 
+  filter(
+    !(
+      is.na(end_station_id) & 
+      is.na(end_station_name) & 
+      is.na(end_lat) & 
+      is.na(end_lng)
+    )
+  )
+```
+
+Finally, what is the data integrity for trips without station latitude and longitude?
+
+```{r}
+trip_data %>% 
+  filter(
+      is.na(start_lat) & 
+      is.na(start_lng) & 
+      is.na(end_lat) & 
+      is.na(end_lng)
+  ) %>% count() # None exist
+```
+
+#### The `start_lat`, `ended_lat`, `start_lng`, and `start_lat` fields
+
+```{r}
+# Checking for the minimum and maximum start station latitude and longitude
+trip_data %>% 
+  select(start_lat, start_lng) %>% 
+  summarise(
+    min_start_lat = min(start_lat), 
+    max_start_lat = max(start_lat),
+    min_start_lng = min(start_lng), 
+    max_start_lng = max(start_lng)
+  )
+```
+
+```{r}
+# Checking for the minimum and maximum end station latitude and longitude
+trip_data %>% 
+  select(end_lat, end_lng) %>% 
+  summarise(
+    min_end_lat = min(end_lat), 
+    max_end_lat = max(end_lat),
+    min_end_lng = min(end_lng), 
+    max_end_lng = max(end_lng)
+  )
+```
+
+Hmm 🤔. The start station coordinates lie within the right range of Chicago's coordinates, but the end station is unusual. Further investigation is needed. I am assuming the start station coordinates range is the right range for Chicago. With this, I want to understand the trip duration of trips with end stations outside of Chicago.
+
+```{r}
+trip_data %>%
+  select(end_lat, end_lng, ended_at, started_at) %>% 
+  filter(
+    end_lat <= 41.64 | 
+    end_lat >= 42.07 |
+    end_lng <= -87.91 | 
+    end_lng >= 87.52
+  ) %>% 
+  summarise(ave_trip_duration = mean(ended_at - started_at))
+
+# The average trip duration is normal
+```
+
+Next, I want to understand the distribution and notice the number of outliers.
+
+```{r}
+# Visualizing end latitude distribution
+trip_data %>% 
+  select(end_lat) %>% 
+  filter(
+    end_lat <= 41.64 | 
+    end_lat >= 42.07
+  ) %>% 
+  ggplot() +
+  geom_histogram(mapping = aes(x = end_lat)) 
+```
+
+```{r}
+# Summary of end latitude distribution
+trip_data %>% 
+  select(end_lat) %>% 
+  filter(
+    end_lat <= 41.64 | 
+      end_lat >= 42.07
+  ) %>% 
+  select(end_lat) %>% 
+  summary(end_lat)
+```
+
+```{r}
+# Visualizing end longitude distribution 
+trip_data %>% 
+  select(end_lng) %>% 
+  filter(
+    end_lng <= -87.91 | 
+    end_lng >= 87.52
+  ) %>% 
+  ggplot() +
+  geom_histogram(mapping = aes(x = end_lng))
+```
+
+```{r}
+# Summary of end longitude distribution
+trip_data %>%
+  select(end_lng) %>% 
+  filter(
+    end_lng <= -87.91 | 
+    end_lng >= 87.52
+  ) %>% 
+  select(end_lng) %>% 
+  summary(end_lng)
+```
+
+From the distribution, a few points are found outside the mean, therefore for both `end_lat` and `end_lng`, but I do not know if they are valid trips. Maybe the GPS was malfunctioning 😒. Well, such trips were few, and removing it will not significantly affect the dataset.
+
+```{r}
+# Removing such trips using the 1st and 3rd quartiles
+
+trip_data  <- trip_data %>% 
+  filter(
+    end_lat > 41 & 
+    end_lat < 43
+  ) %>% 
+  filter(
+    end_lng > -90 & 
+    end_lng < 86
+  )
+```
+
+#### The `member_casual` field
+
+The `member_casual` of any trip should be `casual` or `member`. Let's verify 🔎.
+
+```{r}
+trip_data %>% 
+  select(member_casual) %>% 
+  count(member_casual) #Yes, just two options
+```
+
+Writing to a .csv file for further analysis in other platforms. Do not run code if you don't need it (it takes a long time to compute).
+
+```{r}
+#vroom_write(trip_data, "divvy-tripdata-2024/2024-divvy-tripdata.csv", delim = ",") 
+```
+
+### Filling in Empty Fields
+
+After processing and cleaning the dataset, some `start_station_name`, `end_station_name`, `start_station_id`, and `end_station_id` contain empty values. Before I start the analysis, I fill in the fields.
+
+```{r}
+# Filling in empty start_station_id and start_station_name with "unknown"
+# All trips with empty start_station_id have a corresponding start_station_name
+# which made mapping the stations' names to the station's ID and vice versa impossible
+
+trip_data <- trip_data %>% 
+  mutate(
+    start_station_id = 
+      ifelse(is.na(start_station_id), "unknown", start_station_id),
+    start_station_name = 
+      ifelse(is.na(start_station_name), "unknown", start_station_name)
+  )
+```
+
+```{r}
+#Similarly, the end_station_id has no mapping in the end_station_name and vice versa.
+
+trip_data <- trip_data %>% 
+  mutate(
+    end_station_id = 
+      ifelse(is.na(end_station_id), "unknown", end_station_id),
+    end_station_name = 
+      ifelse(is.na(end_station_name), "unknown", end_station_name)
+  )
+```
+
+Note: No need to fill in empty fields for `start_lat`, `start_lng`, `end_lat`, and `end_lng` because they are complete after cleaning and processing the dataset.
+
+```{r}
+# Verifying if those fields are complete
+trip_data %>% 
+  filter(
+    is.na(end_lat) |  
+    is.na(end_lng) |
+    is.na(start_lat) | 
+    is.na(start_lng)
+  ) %>% 
+  count() # Zero
+```
+
+### Adding New Fields: `duration`, `month`, `day`, `hour`
+
+New fields are added to the dataset. `duration` represents the duration of the trip, `month` represents the month the trip was taken, `day` represents the day the trip was taken, and `hour` represents the time of the day the trip was taken.
+
+```{r}
+# m_weekdays is used to reorder the days field when plotting
+
+m_weekdays <- 
+  c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+trip_data <- trip_data %>% 
+  mutate(
+    duration = as.numeric(ended_at - started_at),
+    month = factor(months(started_at), month.name),
+    day = factor(weekdays(started_at), m_weekdays),
+    hour = hour(started_at) 
+  )
+```
+
+### Analyzing the Data
+
+Now at the real business 😊 - analyzing the data.
+
+```{r}
+# A color palette
+member_casual_fill = c("member" = "#5670f0" , "casual" = "#0d1069")
+```
+
+Q: What is the average ride duration for members compared to casual riders?
+
+```{r}
+trip_data %>% 
+  select(duration, member_casual) %>% 
+  group_by(member_casual) %>% 
+  summarise(mean_ride_duration = mean(duration)) %>% # duration: min
+  ggplot(
+    mapping = aes(
+      x = member_casual, 
+      y = mean_ride_duration, 
+      fill = member_casual)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(mean_ride_duration, 1)), vjust=-0.25) +
+  scale_fill_manual(values = member_casual_fill) +
+  labs(title = "Average Trip Duration",
+       subtitle = "12-month trip duration for 2024",
+       x = "User Type",
+       y = "Duration (min)") +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(face = "bold"),
+    legend.position = "none"
+  )
+```
+
+Impressive, casuals ride 8.9 min more than members, averaging 73% more than what members ride. Hmm🤔, what is causing casuals to ride more? Let's find out.
+
+Q: Which days of the week have the highest ridership for members and casual users?
+
+```{r}
+trip_data %>% 
+  select(member_casual, day) %>% 
+  count(day, member_casual) %>%
+  {
+    temp_trips <- . # holds the temporary trips
+    
+    # Retrieving the max rides for both casual and member
+    maxs <- temp_trips %>% group_by(member_casual) %>% filter(n == max(n))
+    
+   # Adding label for legend
+    labels <- temp_trips %>% group_by(member_casual) %>% slice_tail(n = 1)
+    
+    
+    # Plotting the graph
+    temp_trips %>% 
+      ggplot(mapping = aes(
+        x = day, 
+        y= n, 
+        group = member_casual, 
+        color= member_casual)) +
+      geom_line(linewidth=1.5) +
+      geom_point(size=3, data = maxs) +
+      geom_text_repel(
+        aes(label = member_casual), 
+        data = labels, 
+        nudge_x = 1, 
+        segment.colour=NA) +
+      geom_text_repel(
+        aes(label = day), 
+        data = maxs, 
+        nudge_x = -1, 
+        na.rm = TRUE) +
+      scale_color_manual(values = member_casual_fill) +
+      scale_y_continuous(
+        labels = scales::label_number(scale = 1e-3, suffix = " k")) +
+      labs(title = "Daily Trend of Rides",
+           subtitle = "12-month Rides per Day for 2024",
+           x = "Days of the Week",
+           y = "Number of Rides") +
+      theme_minimal() + 
+      theme(
+        legend.position = "none"
+      )
+  }
+ 
+```
+
+Members are less active on weekends, with their peak riding day on Wednesday. From Monday to Wednesday, they show high engagement, aligning with the busy schedules of many American workers. As the weekend approaches, their activity declines. On the other hand, casual riders maintain a steady presence during weekdays but experience a sharp increase in activity on Saturdays. This trend suggests that casual riders take advantage of their free time on weekends to spend with family and friends or explore new places. Overall, on weekends, the number of rides is highest among casual users.
+
+Q: How does seasonal variation affect the ridership of members and casual riders?
+
+```{r}
+trip_data %>% 
+  select(member_casual, month) %>% 
+  count(month, member_casual) %>%
+  {
+    temp_trips <- . # holds the temporary trips
+    
+    # Retrieving the max rides for both casual and member
+    maxs <- temp_trips %>% 
+      group_by(member_casual) %>% 
+      filter(n == max(n))
+    
+   # Adding label for legend
+    labels <- temp_trips %>% 
+      group_by(member_casual) %>% 
+      slice_tail(n = 1)
+    
+    
+    # Plotting the graph
+    temp_trips %>% 
+      ggplot(mapping = aes(
+        x = month, 
+        y= n, 
+        group = member_casual, 
+        color= member_casual)) +
+      geom_line(linewidth=1.5) +
+      geom_point(size=3, data=maxs) +
+      geom_text_repel(
+        aes(label = member_casual), 
+        data = labels, 
+        nudge_x = 1.5, 
+        segment.colour=NA) +
+      geom_text_repel(
+        aes(label = month), 
+        data = maxs, 
+        nudge_x = -1.5, 
+        na.rm = TRUE) +
+      scale_color_manual(values = member_casual_fill) +
+      scale_y_continuous(
+        labels = scales::label_number(scale = 1e-3, suffix = " k")) +
+      labs(title = "Seasonal Trends of Rides",
+           subtitle = "Each Month Rides for 2024",
+           x = "Month",
+           y = "Number of Rides") +
+      theme_minimal() + 
+      theme(
+        legend.position = "none",
+        axis.text.x = element_text(angle = 45)
+      )
+  }
+```
+
+Seasonal changes impact both user groups simultaneously, as their usage trends follow the same trajectory. This suggests that both members and casual riders respond similarly to seasonal variations. As summer transitions into early autumn in Chicago, the mild weather and comfortable temperatures likely encourage more people to ride. This period may also align with increased commuting patterns after summer vacations and more outdoor activities before colder months set in.
+
+Que: What are the peak usage hours for members and casual riders?
+
+```{r}
+trip_data %>% 
+  select(hour, member_casual) %>%  
+  count(hour, member_casual) %>% {
+    
+    # Function to reformat the hour label on the x-axis
+    label_hour <- function(hour) {
+      am_pm = "am"
+      am_pm <- ifelse(hour > 12, "pm", "am")
+      
+      hour <- ifelse(hour %% 12 == 0, 12, hour %% 12)
+      paste(hour, am_pm)
+    }
+    
+    # Shaded rectangles to show commuting times
+    shaded_region <- data.frame(
+      xmin = c(6, 16),
+      xmax = c(9, 18),
+      ymin = -Inf,
+      ymax = Inf,
+      label = c("Going to Work", "Closing Time")
+    )
+    
+    
+    
+    temp_trips <- .
+     # Adding label for legend
+    labels <- temp_trips %>% group_by(member_casual) %>% slice_tail(n = 1)
+    
+    temp_trips %>% 
+      ggplot(aes(x = hour, y = n, color=member_casual)) +
+      geom_line(linewidth=1.5) +
+      geom_rect(data = shaded_region, 
+                aes(
+                  xmin=xmin, 
+                  xmax=xmax, 
+                  ymin=ymin, 
+                  ymax=ymax, 
+                  fill=c('red', 'blue')
+                  ),  
+                alpha=0.2, 
+                inherit.aes = FALSE) +
+      geom_text(data = shaded_region, 
+                aes(x = (xmin + xmax)/2, y=Inf, label=label), 
+                color="black", 
+                size=3.5,
+                angle=90,
+                hjust=1.5) +
+      geom_text_repel(
+        aes(label = member_casual), 
+        data = labels, nudge_x = 1.5, segment.colour=NA) +
+      scale_y_continuous(
+        labels = scales::label_number(scale = 1e-3, suffix = " K")) +
+      scale_x_continuous(
+        labels = label_hour, breaks = seq(0, 24, 2)) +
+      scale_color_manual(values=member_casual_fill) +
+      labs(
+        title="Hourly Trends of Ride",
+        subtitle = "Total rider per hour for 2024 rides",
+        x="Hour of the day",
+        y="Number of Rides"
+      ) +
+      theme_minimal() +
+      theme(legend.position = "none")
+  }
+```
+
+Most member riders reach peak usage during typical commuting hours—between 6 AM and 9 AM when Chicago workers head to work, and between 4 PM and 6 PM when they return home. Interestingly, casual riders also show a peak during the evening commute, which may suggest that some of them use the service similarly to member riders.
+
+I will further investigate hourly ridership trends for each day to confirm or challenge this observation about casual riders.
+
+Que: Are casual riders using the service during peak commuting hours, suggesting a pattern similar to member riders?
+
+```{r}
+
+trip_data %>% 
+  select(member_casual, hour, day) %>% 
+  filter(member_casual == "casual") %>% 
+  group_by(hour, day) %>% 
+  reframe(count = n()) %>% {
+    temp_data <- .
+    
+    # Function to reformat the hour label on the x-axis
+    label_hour <- function(hour) {
+      am_pm = "am"
+      am_pm <- ifelse(hour > 12, "pm", "am")
+      
+      hour <- ifelse(hour %% 12 == 0, 12, hour %% 12)
+      paste(hour, am_pm)
+    }
+    
+     # Shaded rectangles to show commuting times
+    shaded_region <- data.frame(
+      xmin = c(6, 16, 11),
+      xmax = c(9, 18, 16),
+      ymin = -Inf,
+      ymax = Inf,
+      label = c("Going to Work", "Closing Time", "Free (Happy) Time")
+    )
+    
+    temp_data %>% 
+    ggplot(aes(x = hour, y = count, color = day)) +
+      geom_line(linewidth=1.2,) +
+      geom_rect(
+        data = shaded_region, 
+        aes(
+          xmin=xmin, 
+          xmax=xmax, 
+          ymin=ymin, 
+          ymax=ymax, 
+          fill=c('red', 'blue', "yellow")),  
+        alpha=0.2, 
+        inherit.aes = FALSE,
+        show.legend = FALSE
+      ) +
+      geom_text(
+        data = shaded_region, 
+        aes(
+          x = (xmin + xmax)/2, 
+          y=Inf, 
+          label=label), 
+        color="black", 
+        size=3.5,
+        angle=90,
+        hjust=1.5) +
+      scale_y_continuous(
+        labels = scales::label_number(scale = 1e-3, suffix = " K")) +
+      scale_x_continuous(
+        labels = label_hour, breaks = seq(0, 24, 2)) +
+      labs(
+       title="Hourly Trends of Casual Riders",
+       subtitle = "Total rides during the day for 2024",
+       x="Hour of the day",
+       y="Number of Rides",
+       color="Days"
+      ) +
+      theme_minimal() +
+      theme(
+        legend.position = "inside",
+        legend.position.inside = c(0.1, 0.7),
+        legend.background = element_rect(fill="white", color="black")
+      )
+  } # duration: min
+ 
+
+```
+
+Yes, it is evident that from Monday to Friday, the usage pattern of casual riders closely resembles that of member riders, confirming that some casual riders use the service similarly to members. However, on Saturdays and Sundays, the peak usage shifts to a time range of 11 AM – 4 PM, likely indicating that casual riders use the service for leisure activities such as visiting the beach, going out with friends, or exploring the city.
+
+Let's do the same for member riders.
+
+```{r}
+
+trip_data %>% 
+  select(member_casual, hour, day) %>% 
+  filter(member_casual == "member") %>% 
+  group_by(hour, day) %>% 
+  reframe(count = n()) %>% {
+    temp_data <- .
+    
+    # Function to reformat the hour label on the x-axis
+    label_hour <- function(hour) {
+      am_pm = "am"
+      am_pm <- ifelse(hour > 12, "pm", "am")
+      
+      hour <- ifelse(hour %% 12 == 0, 12, hour %% 12)
+      paste(hour, am_pm)
+    }
+    
+     # Shaded rectangles to show commuting times
+    shaded_region <- data.frame(
+      xmin = c(6, 16, 11),
+      xmax = c(9, 18, 16),
+      ymin = -Inf,
+      ymax = Inf,
+      label = c("Going to Work", "Closing Time", "Free (Happy) Time")
+    )
+    
+    temp_data %>% 
+    ggplot(aes(x = hour, y = count, color = day)) +
+      geom_line(linewidth=1.2,) +
+      geom_rect(
+        data = shaded_region, 
+        aes(
+          xmin=xmin, 
+          xmax=xmax, 
+          ymin=ymin, 
+          ymax=ymax, 
+          fill=c('red', 'blue', "yellow")),  
+        alpha=0.2, 
+        inherit.aes = FALSE,
+        show.legend = FALSE) +
+      geom_text(data = shaded_region, 
+                aes(x = (xmin + xmax)/2, y=Inf, label=label), 
+                color="black", 
+                size=3.5,
+                angle=90,
+                hjust=1.5) +
+      scale_y_continuous(
+        labels = scales::label_number(scale = 1e-3, suffix = " K")) +
+      scale_x_continuous(
+        labels = label_hour, breaks = seq(0, 24, 2)) +
+      labs(
+       title="Hourly Trends of Member Riders",
+       subtitle = "Total rides during the day for 2024",
+       x="Hour of the day",
+       y="Number of Rides",
+       color="Days"
+      ) +
+      theme_minimal() +
+      theme(
+        legend.position = "inside",
+        legend.position.inside = c(0.1, 0.7),
+        legend.background = element_rect(fill="white", color="black")
+      )
+  } 
+ 
+
+```
+
+A similar pattern is observed during weekdays, but weekend activity among member riders appears less prominent compared to their weekday usage. In contrast, casual riders show higher engagement on weekends than on weekdays, suggesting a shift toward more recreational or leisure-based trips.
+
+Que: What are the most popular starting and ending stations for members and casual riders?
+
+```{r}
+trip_data %>% 
+  filter(
+    start_station_name != "unknown", 
+    end_station_name != "unknown") %>% 
+  select(
+    member_casual, 
+    start_station_name,
+    end_station_name, 
+    start_lat, 
+    start_lng,
+    end_lat,
+    end_lng) %>% {
+      temp_data <- .
+      
+      # Extracting top 10 start stations
+      start_stations <- temp_data %>% 
+        select(
+          member_casual, 
+          start_station_name, 
+          start_lat, 
+          start_lng)
+      
+      top_10_start_stations <- start_stations %>% 
+        group_by(member_casual, start_station_name) %>% 
+        reframe(
+          start_lat = mean(start_lat),
+          start_lng=mean(start_lng), count = n()) %>% 
+        group_by(member_casual) %>% 
+        arrange(desc(count)) %>% 
+        slice(1: 10) 
+      
+      # Extracting top 10 end stations
+      end_stations <- temp_data %>% 
+        select(member_casual, 
+               end_station_name, 
+               end_lat, 
+               end_lng)
+      
+      top_10_end_station <- end_stations %>% 
+        group_by(member_casual, end_station_name) %>% 
+        reframe(
+          end_lat = mean(end_lat), 
+          end_lng = mean(end_lng), count = n()) %>% 
+        group_by(member_casual) %>% 
+        arrange(desc(count)) %>% 
+        slice(1: 10)
+      
+      # Generating sf data
+      
+      start_stations_sf <- 
+        st_as_sf(
+          top_10_start_stations, 
+          coords=c("start_lng", "start_lat"), 
+          crs=4326)
+      
+      end_stations_sf <- 
+        st_as_sf(
+          top_10_end_station, 
+          coords=c("end_lng", "end_lat"), 
+          crs=4326)
+      
+      
+      casual_start_station_sf <- start_stations_sf %>% 
+        filter(member_casual == "casual")
+      
+      member_start_station_sf <- start_stations_sf %>% 
+        filter(member_casual == "member")
+      
+      casual_end_station_sf <- end_stations_sf %>% 
+        filter(member_casual == "casual")
+      member_end_station_sf <- end_stations_sf %>% 
+        filter(member_casual == "member")
+      
+      mapview(
+        casual_start_station_sf, 
+        col.regions = "blue", cex=5, 
+        layer.name="casual start") +
+        mapview(
+          casual_end_station_sf, 
+          col.regions = "red", cex=5, 
+          layer.name="casual end") +
+        mapview(
+          member_start_station_sf, 
+          col.region="yellow", cex=5, 
+          layer.name="member start") +
+        mapview(
+          member_end_station_sf, 
+          col.regions = "green", cex=5, 
+          layer.name="member end")
+  }
+```
+
+The top 10 start and end stations for casual riders are primarily located near the shore, where they have access to scenic walkways and popular recreational attractions such as DuSable Lake Shore Drive, Shedd Aquarium, Adler Planetarium, and Theater on the Lake. In contrast, the top 10 start and end stations for member riders are mostly situated in areas with a high concentration of apartments and businesses, indicating that these locations serve as hubs for daily work commutes and professional activities.
+
+You can click on the layers button ![layer button](C:/Users/emman/Pictures/Screenshots/Screenshot%202025-03-10%20100926.png) to filter out.
+
+Que: What bike types do members and casual riders prefer the most?
+
+```{r}
+trip_data %>% 
+  select(member_casual, rideable_type) %>%
+  group_by(member_casual, rideable_type) %>% 
+  reframe(count = n()) %>% {
+    
+    temp_data <- .
+    
+    temp_data %>% 
+      ggplot(aes(x=rideable_type, y = count, fill=member_casual)) +
+      geom_bar(position="dodge", stat = "identity") +
+      scale_y_continuous(
+        labels = scales::label_number(scale = 1e-6, suffix = " M")) +
+      scale_fill_manual(values = member_casual_fill) +
+      labs(
+        title="Rideable Types Used by Users",
+        subtitle = "Total number of ride types for 2024 rides",
+        fill = "User Type",
+        x="Rideable Type",
+        y="Number of Ride Type"
+      ) +
+     
+      theme_minimal()
+    
+  }
+```
+
+Sometimes, users ride at a slower pace when leisurely cycling, which extends the trip duration. Since casual riders tend to engage in such activities more often than member riders, their previously computed average duration may be misinterpreted. Estimating the approximate trip distance will provide a clearer context for the average duration. The approximate distance was calculated using the *Haversine Formula*.
+
+Que: What is the average distance traveled per trip for members compared to casual users?
+
+```{r}
+
+trip_data %>% 
+  select(member_casual, start_lat, start_lng, end_lat, end_lng) %>% {
+    
+    # Haversine formula to calculate the distance between two points
+    haversine_distance <- function(lat1, lon1, lat2, lon2) {
+      to_rad <- function(deg) {deg * (pi / 180)}
+      
+      lat1 <- to_rad(lat1)
+      lon1 <- to_rad(lon1)
+      lat2 <- to_rad(lat2)
+      lon2 <- to_rad(lon2)
+      
+      dlat <- lat2 - lat1
+      dlon <- lon2 - lon1
+      
+      R <- 6371000 # m
+      
+      a <- sin(dlat/2)^2 + (cos(lat1) * cos(lat2) * sin(dlon/2)^2)
+      c <- 2 * atan2(sqrt(a), sqrt(1-a))
+      d <- R * c
+    }
+    
+    temp_data <- .
+    
+    temp_data %>% 
+      mutate(
+        distance = haversine_distance(start_lat, start_lng, end_lat, end_lng) ) %>%
+      select(member_casual, distance) %>% 
+      group_by(member_casual) %>% 
+      reframe(mean_distance = mean(distance)) %>% 
+      ggplot(aes(x = member_casual, y = mean_distance, fill=member_casual)) +
+      geom_bar(stat="identity") +
+      scale_fill_manual(values=member_casual_fill) +
+      labs(
+        title= "Average Distance by Users (Casual and Member)",
+        subtitle = "Average distance for 12-month trips in 2024 using Haversine Formula",
+        x ="User",
+        y = "Distance (m)",
+      ) +
+      theme_minimal() +
+      theme(
+        legend.position = "none"
+      )
+  }
+
+```
+
+The difference is not significant, indicating that the average duration can be considered a reasonable estimate of the time users in both categories ride at a constant speed.
+
+## Analytics Summary
+
+1.  Ride Duration and Usage Patterns Casual riders spend an average of **8.9 minutes** more per ride than member riders, translating to 73% longer trips. This significant difference suggests that casual riders may be using the service more for leisure and exploration rather than structured commuting.
+
+2.  Weekly Trends and Weekend Preferences Member riders show high engagement from **Monday** to **Wednesday**, aligning with traditional work schedules, and their activity drops significantly over the weekend. In contrast, casual riders exhibit a steady weekday presence but experience a sharp increase on **Saturdays**, suggesting a preference for leisure activities with family and friends. This explains why on weekends, the number of rides is highest among casual users.
+
+3.  Seasonal Influence on Ridership Both casual and member riders display synchronized usage trends across different seasons. As summer transitions into autumn in Chicago, mild weather and increased commuting post-vacation likely contribute to the rise in ridership. This indicates that external factors like weather conditions and seasonal routines influence both groups similarly.
+
+4.  Commuting vs. Leisure-Based Usage Member riders primarily use the service during traditional commuting hours (**6 AM – 9 AM** and **4 PM – 6 PM**), reinforcing their reliance on bike rentals for daily transportation. Interestingly, casual riders also peak during the evening commute, suggesting that some may be using the service similarly to members. However, on weekends, casual riders shift their peak usage to between **11 AM – 4 PM**, aligning with recreational activities such as visiting attractions and exploring the city.
+
+5.  Location Preferences and Purpose of Travel A spatial analysis of station usage further supports the distinct behavioral patterns between the two groups. Casual riders favor start and end stations near the shore, particularly around scenic and recreational locations such as *DuSable Lake Shore Drive*, *Shedd Aquarium*, and *Adler Planetarium*. In contrast, member riders predominantly use stations in areas with high concentrations of businesses and apartments, reinforcing their reliance on the service for commuting purposes.
+
+### Conclusion
+
+The data confirms a clear distinction between commuter-oriented member riders and leisure-driven casual riders. While some casual users exhibit commuting-like behavior on weekdays, their primary engagement is weekend leisure rides, often in scenic areas. Understanding these behavioral patterns can help optimize bike-sharing services by tailoring pricing models, promotional strategies, and infrastructure improvements to accommodate both daily commuters and recreational users effectively.
+
+## Miscellaneous
+
+I recently completed the Google Professional Data Analytics course on Coursera, and this is my capstone project.
+
+I would greatly appreciate any feedback on mistakes, best practices, and ways to improve my data analysis or R programming. Thank you! 🙏
+
+-   This is the [GitHub Repo](https://github.com/emma-fosu/Cyclistic-Bike-Sharing-Project.git) and [Tablaeu Viz]()
+
+-   This is the [slide presentation](https://docs.google.com/presentation/d/1Z2Y6erZbb3OtgoR39Kxn9MxmYgYCHeRv_x0lZcpSqDE/edit?usp=sharing).
+
+-   My [Kaggle Account](https://www.kaggle.com/emmanfosu)
+
+-   My [Email Address](emmanuel.fosuduffour@gmail.com) and [LinkedIn](www.linkedin.com/in/emma-fosu)
