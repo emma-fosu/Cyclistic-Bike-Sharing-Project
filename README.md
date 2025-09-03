@@ -121,6 +121,7 @@ The dataset has been made available by Motivate International Inc. under this [l
 ---
 
 ## 📁 Project Structure
+```bash
 Cyclistic-bike-sharing-project/
 ├── .gitignore # Git ignore file
 ├── datadivvy-tripdata-2024/ # Raw data
@@ -129,6 +130,7 @@ Cyclistic-bike-sharing-project/
 ├── main.nb.html # Reusable Python scripts
 ├── main.Rmd # Charts and plots
 └── README.md # Project documentation
+```
 
 ## How to Run or Setup the Project
 
